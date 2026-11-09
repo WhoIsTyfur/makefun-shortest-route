@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-const K = 10; // neighbour list size
+const K = 12; // neighbour list size (quadrant picks + nearest)
 // ILS kicks per city and whether to use the LK chain; argv overrides are for local tuning
 // only (the grader passes no arguments).
 const KICKS_PER_CITY = process.argv[2] ? Number(process.argv[2]) : 45; // ~89 s at 60 in the 1-CPU sandbox
@@ -281,8 +281,15 @@ function buildNeighbours() {
   neigh = new Int32Array(n * K).fill(-1);
   const bd = new Float64Array(kk);
   const bi = new Int32Array(kk);
+  // 2 nearest per quadrant, so candidate lists also hold links between clusters
+  const qd = new Float64Array(8);
+  const qi = new Int32Array(8);
+  const qc = new Int32Array(4);
+  const cd = new Float64Array(8 + kk);
+  const ci = new Int32Array(8 + kk);
   for (let i = 0; i < n; i++) {
     let cnt = 0;
+    qc.fill(0);
     const cx = cellOf[i] % G;
     const cy = (cellOf[i] - cx) / G;
     for (let r = 0; r <= G; r++) {
@@ -298,6 +305,15 @@ function buildNeighbours() {
               const dx = X[i] - X[j];
               const dy = Y[i] - Y[j];
               const d2 = dx * dx + dy * dy;
+              const qq = (dx <= 0 ? 0 : 1) + (dy <= 0 ? 0 : 2);
+              const qb = qq * 2;
+              if (qc[qq] < 2 || d2 < qd[qb + 1] || (d2 === qd[qb + 1] && j < qi[qb + 1])) {
+                let q2 = qc[qq] < 2 ? qc[qq]++ : 1;
+                if (q2 === 1 && (qd[qb] > d2 || (qd[qb] === d2 && qi[qb] > j))) {
+                  qd[qb + 1] = qd[qb]; qi[qb + 1] = qi[qb]; q2 = 0;
+                }
+                qd[qb + q2] = d2; qi[qb + q2] = j;
+              }
               if (cnt === kk && (d2 > bd[kk - 1] || (d2 === bd[kk - 1] && j > bi[kk - 1]))) continue;
               let q = cnt < kk ? cnt++ : kk - 1;
               while (q > 0 && (bd[q - 1] > d2 || (bd[q - 1] === d2 && bi[q - 1] > j))) {
@@ -309,11 +325,33 @@ function buildNeighbours() {
           if (r === 0) break;
         }
       }
-      if (cnt === kk) {
-        const reach = r * cell;
-        if (bd[kk - 1] <= reach * reach) break;
-      }
+      const reach = r * cell;
+      const r2 = reach * reach;
+      let done = cnt === kk && bd[kk - 1] <= r2;
+      for (let q = 0; done && q < 4; q++) if (qc[q] < 2 || qd[q * 2 + 1] > r2) done = false;
+      if (done) break;
     }
+    // merge: every quadrant pick, then nearest overall, no duplicates, sorted by distance
+    let m = 0;
+    for (let q = 0; q < 4; q++) {
+      for (let t = 0; t < qc[q]; t++) { cd[m] = qd[q * 2 + t]; ci[m] = qi[q * 2 + t]; m++; }
+    }
+    for (let k = 0; k < cnt && m < kk; k++) {
+      let dup = false;
+      for (let t = 0; t < m; t++) if (ci[t] === bi[k]) { dup = true; break; }
+      if (!dup) { cd[m] = bd[k]; ci[m] = bi[k]; m++; }
+    }
+    for (let a = 1; a < m; a++) {
+      const dv = cd[a];
+      const iv = ci[a];
+      let b = a;
+      while (b > 0 && (cd[b - 1] > dv || (cd[b - 1] === dv && ci[b - 1] > iv))) {
+        cd[b] = cd[b - 1]; ci[b] = ci[b - 1]; b--;
+      }
+      cd[b] = dv; ci[b] = iv;
+    }
+    cnt = m;
+    for (let k = 0; k < cnt; k++) bi[k] = ci[k];
     for (let k = 0; k < cnt; k++) neigh[i * K + k] = bi[k];
     // pad short lists by repeating the last neighbour (only when n - 1 < K)
     for (let k = cnt; k < K; k++) neigh[i * K + k] = bi[cnt - 1];
