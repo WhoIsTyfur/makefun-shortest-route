@@ -9,7 +9,10 @@ const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
 const K = 10; // neighbour list size
-const KICKS_PER_CITY = 60; // ILS kicks per city
+// ILS kicks per city and whether to use the LK chain; argv overrides are for local tuning
+// only (the grader passes no arguments).
+const KICKS_PER_CITY = process.argv[2] ? Number(process.argv[2]) : 60;
+const USE_LK = process.argv[3] ? process.argv[3] === '1' : false;
 
 let n = 0;
 let X = new Float64Array(0);
@@ -175,11 +178,69 @@ function tryOrOpt(a) {
   return 0;
 }
 
+function undoTo(mark) {
+  const was = journaling;
+  journaling = false;
+  for (let q = journal.length - 2; q >= mark; q -= 2) reverse(journal[q], journal[q + 1]);
+  journal.length = mark;
+  journaling = was;
+}
+
+// Lin-Kernighan style chain of sequential 2-opt moves. t1 is fixed, (t1,t2) is the edge
+// to remove, g the gain so far without the closing edge. Moves are applied tentatively and
+// rolled back through the journal; returns the gain of the first improving closed tour.
+const BREADTH = [6, 4, 2, 2, 1, 1, 1, 1];
+const MAX_DEPTH = 7;
+function lkStep(t1, t2, g, level) {
+  const fwd = next(t1) === t2;
+  const base = t2 * K;
+  const width = BREADTH[level];
+  let tried = 0;
+  for (let k = 0; k < K && tried < width; k++) {
+    const t3 = neigh[base + k];
+    const g1 = g - dist(t2, t3);
+    if (g1 <= 0) break;
+    if (t3 === t1) continue;
+    const t4 = fwd ? prev(t3) : next(t3);
+    if (t4 === t2 || t4 === t1) continue;
+    tried++;
+    const g2 = g1 + dist(t3, t4);
+    const close = g2 - dist(t4, t1);
+    const mark = journal.length;
+    move2(t1, t2, t4, t3);
+    if (close > 0) {
+      push(t2); push(t3); push(t4);
+      return close;
+    }
+    if (level + 1 < MAX_DEPTH) {
+      const r = lkStep(t1, t4, g2, level + 1);
+      if (r > 0) {
+        push(t2); push(t3); push(t4);
+        return r;
+      }
+    }
+    undoTo(mark);
+  }
+  return 0;
+}
+
+function tryLK(t1) {
+  for (let dir = 0; dir < 2; dir++) {
+    const t2 = dir === 0 ? next(t1) : prev(t1);
+    const r = lkStep(t1, t2, dist(t1, t2), 0);
+    if (r > 0) {
+      push(t1);
+      return -r;
+    }
+  }
+  return 0;
+}
+
 function localSearch() {
   let total = 0;
   while (qCount > 0) {
     const a = pop();
-    let d = try2opt(a);
+    let d = USE_LK ? tryLK(a) : try2opt(a);
     if (d === 0) d = tryOrOpt(a);
     total += d;
   }
@@ -388,22 +449,18 @@ function solve(text, seed) {
   inQ = new Uint8Array(n);
   qHead = 0; qTail = 0; qCount = 0;
   for (let i = 0; i < n; i++) push(tour[i]);
-  journaling = false;
+  journaling = true;
+  journal.length = 0;
   localSearch();
 
   rngState = seed >>> 0 || 1;
-  const kicks = n * KICKS_PER_CITY;
-  journaling = true;
+  const kicks = Math.round(n * KICKS_PER_CITY);
   for (let it = 0; it < kicks; it++) {
     journal.length = 0;
     const delta = kick() + localSearch();
-    if (delta > 0) {
-      journaling = false;
-      for (let q = journal.length - 2; q >= 0; q -= 2) reverse(journal[q], journal[q + 1]);
-      journaling = true;
-    }
+    if (delta > 0) undoTo(0);
   }
-  journaling = false;
+  journal.length = 0;
   return tour;
 }
 
