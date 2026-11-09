@@ -11,8 +11,9 @@ const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 const K = 10; // neighbour list size
 // ILS kicks per city and whether to use the LK chain; argv overrides are for local tuning
 // only (the grader passes no arguments).
-const KICKS_PER_CITY = process.argv[2] ? Number(process.argv[2]) : 60;
+const KICKS_PER_CITY = process.argv[2] ? Number(process.argv[2]) : 45; // ~89 s at 60 in the 1-CPU sandbox
 const USE_LK = process.argv[3] ? process.argv[3] === '1' : false;
+const KICK_LEN = process.argv[4] ? Number(process.argv[4]) : 50; // max kick segment length
 
 let n = 0;
 let X = new Float64Array(0);
@@ -191,6 +192,7 @@ function undoTo(mark) {
 // rolled back through the journal; returns the gain of the first improving closed tour.
 const BREADTH = [6, 4, 2, 2, 1, 1, 1, 1];
 const MAX_DEPTH = 7;
+const LK_SPAN = process.argv[5] ? Number(process.argv[5]) : 1000;
 function lkStep(t1, t2, g, level) {
   const fwd = next(t1) === t2;
   const base = t2 * K;
@@ -206,6 +208,13 @@ function lkStep(t1, t2, g, level) {
     tried++;
     const g2 = g1 + dist(t3, t4);
     const close = g2 - dist(t4, t1);
+    if (close <= 0) {
+      // only explore deeper through cheap (short) tentative reversals
+      let span = fwd ? pos[t4] - pos[t2] : pos[t2] - pos[t4];
+      if (span < 0) span += n;
+      if (span > n - span) span = n - span;
+      if (span > LK_SPAN || level + 1 >= MAX_DEPTH) continue;
+    }
     const mark = journal.length;
     move2(t1, t2, t4, t3);
     if (close > 0) {
@@ -405,7 +414,7 @@ function hasNeighbour(i, j) {
 }
 
 function kick() {
-  const maxL = Math.max(1, Math.min(50, Math.floor(n / 8)));
+  const maxL = Math.max(1, Math.min(KICK_LEN, Math.floor(n / 8)));
   const r = rand() % n;
   const l1 = 1 + (rand() % maxL);
   const l2 = 1 + (rand() % maxL);
